@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'maven3'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
+    stages {
+        stage('Git checkout') {
+            steps {
+                git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/KarthickRajG/Task-Master-Pro.git'
+            }
+        }
+        stage('compile') {
+            steps {
+                sh 'mvn compile'
+            }
+        }
+        stage('test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+        stage('Trivy FS scan') {
+            steps {
+                sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
+        stage('sonarqube analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=TaskMaster \
+                    -Dsonar.projectName=TaskMaster -Dsonar.java.binaries=target '''
+                }
+            }
+        }
+        stage('Build Application') {
+            steps {
+                sh 'mvn package'
+            }
+        }
+        stage('Publish to Nexus') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'settings', jdk: '', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                    sh 'mvn deploy'
+                }  
+            }
+        }
+        stage('Build and Tag Docker Image') {
+            steps {
+                script{
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh 'docker build -t karthickrajg/taskmaster:latest .'
+                    }
+                }
+            }
+        }
+        stage('Scan Docker Image by Trivy') {
+            steps {
+                sh 'trivy image --format table -o image-report.html karthickrajg/taskmaster:latest'
+            }
+        }
+        stage('Push Docker Image') {
+            steps {
+                script{
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh 'docker push karthickrajg/taskmaster:latest'
+                    }
+                }
+            }
+        }
+        stage('Deploy to Kubernetes') {
+            steps {
+                withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://51C36729BC4F4580C1C9C0F0B10FB829.gr7.ap-south-1.eks.amazonaws.com') {
+                    sh 'kubectl apply -f deployment-service.yml -n webapps'
+                    sleep 30
+                } 
+            }
+        }
+        stage('verify the deployment') {
+            steps {
+                withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://51C36729BC4F4580C1C9C0F0B10FB829.gr7.ap-south-1.eks.amazonaws.com') {
+                    sh 'kubectl get pods -n webapps'
+                    sh 'kubectl get svc -n webapps'
+                }
+            }
+        }
+    }
+}
